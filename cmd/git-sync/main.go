@@ -33,6 +33,9 @@ import (
 	"strings"
 	"time"
 
+	"net/http"
+	_ "net/http/pprof"
+
 	"github.com/thockin/glogr"
 	"github.com/thockin/logr"
 )
@@ -68,6 +71,8 @@ var flSSH = flag.Bool("ssh", envBool("GIT_SYNC_SSH", false),
 	"use SSH for git operations")
 var flSSHKnownHosts = flag.Bool("ssh-known-hosts", envBool("GIT_KNOWN_HOSTS", true),
 	"enable SSH known_hosts verification")
+
+var flPProf = flag.Int("pprof-port", 0, "enable pprof profiling on this port")
 
 var log = newLoggerOrDie()
 
@@ -163,6 +168,14 @@ func main() {
 	// From here on, output goes through logging.
 	log.V(0).Infof("starting up: %q", os.Args)
 
+	if *flPProf != 0 {
+		go func() {
+			addr := fmt.Sprintf("localhost:%d", *flPProf)
+			log.Errorf("HTTP terminated: %s", http.ListenAndServe(addr, nil))
+		}()
+		log.V(1).Infof("enabled profiling on port %d", flPProf)
+	}
+
 	initialSync := true
 	failCount := 0
 	for {
@@ -180,6 +193,7 @@ func main() {
 		}
 		if initialSync {
 			if *flOneTime {
+				log.V(2).Infof("synced one time, exiting")
 				os.Exit(0)
 			}
 			if isHash, err := revIsHash(*flRev, *flRoot); err != nil {
@@ -351,11 +365,13 @@ func revIsHash(rev, gitRoot string) (bool, error) {
 // syncRepo syncs the branch of a given repository to the destination at the given rev.
 func syncRepo(repo, branch, rev string, depth int, gitRoot, dest string) error {
 	target := path.Join(gitRoot, dest)
+	log.V(9).Infof("syncing repo to %s", target)
 	gitRepoPath := path.Join(target, ".git")
 	hash := rev
 	_, err := os.Stat(gitRepoPath)
 	switch {
 	case os.IsNotExist(err):
+		log.V(9).Infof("repo does not appear to be present, cloning it")
 		err = cloneRepo(repo, branch, rev, depth, gitRoot)
 		if err != nil {
 			return err
@@ -364,9 +380,11 @@ func syncRepo(repo, branch, rev string, depth int, gitRoot, dest string) error {
 		if err != nil {
 			return err
 		}
+		log.V(9).Infof("local hash:  ", hash)
 	case err != nil:
 		return fmt.Errorf("error checking if repo exists %q: %v", gitRepoPath, err)
 	default:
+		log.V(9).Infof("repo appears to be present, checking if it needs an update")
 		local, remote, err := getRevs(target, branch, rev)
 		if err != nil {
 			return err
